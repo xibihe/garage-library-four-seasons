@@ -1,6 +1,6 @@
 # Garage Library · Four Seasons
 
-The four SPZ scenes share a coordinate system. A click starts the next season's small ripple at the picked location. Ripples can propagate concurrently, and the newest ripple takes precedence where it has arrived. The shader changes opacity and shading at the boundary and briefly shows a subset of the original splat outlines.
+The four SPZ scenes share a coordinate system. A click starts the next season's small ripple at the picked location. Ripples can propagate concurrently, and the newest ripple takes precedence where it has arrived. The shader changes opacity and shading at the boundary and briefly shows a subset of the original splat outlines. Around the car, a wider overlap and transmittance-based blending maintain coverage as one reconstruction hands off to the next.
 
 The original five views are embedded in `DEFAULT_CAMERA_PATH` in their capture order. The path plays once after loading. The Camera path panel supports saving, revisiting, replacing, and deleting views. Edits are stored in the current browser. Each path segment interpolates camera position, pitch, and yaw, with continuous velocities between views.
 

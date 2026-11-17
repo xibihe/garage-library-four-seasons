@@ -118,6 +118,7 @@ const CFG = {
   sortDistance:0.06,                 // Camera movement in meters that triggers a depth sort.
   pickStride:97,                     // Pointer picking sample stride. Rendering uses every splat.
   roomBounds:[[-8.8,-0.2,-10.5],[5.9,7.5,7.2]],
+  vehicle:{x:-1.59,z:1.98,yaw:9,halfWidth:1.14,halfLength:2.32,overlap:0.20}, // Car coverage from the shared layout.
   smallWaveReach:12.6,                // Reach of the secondary ripples.
   smallWaveSources:[                 // Secondary sources as x, y, z and normalized start delay.
     [ 2.90, 1.20, 2.1, 0.22],
@@ -159,14 +160,24 @@ function installSeasonShader(spark) {
     uniform vec4 waveOrigins[${fastWaves}], waveStates[${fastWaves}], smallRadii[${fastWaves}];
     uniform sampler2D waveData;
     flat out float vWaveOutline;
+    flat out vec2 vVehicleCoverage;
     float waveDistance(vec3 p, vec3 seed) {
       return length((p - seed) * vec3(1.0, 0.75, 1.0));
     }
     float ridge(float x, float width) {
       return 1.0-smoothstep(0.0,width,abs(x));
     }
+    float vehicleCoverage(vec3 wp) {
+      if (wp.y<=0.055 || wp.y>=1.68) return 0.0;
+      vec2 offset=wp.xz-vec2(${CFG.vehicle.x},${CFG.vehicle.z});
+      float yaw=radians(${CFG.vehicle.yaw.toFixed(1)});
+      vec2 local=mat2(cos(yaw),sin(yaw),-sin(yaw),cos(yaw))*offset;
+      vec2 footprint=abs(local)/vec2(${CFG.vehicle.halfWidth},${CFG.vehicle.halfLength});
+      float side=1.0-smoothstep(0.89,1.12,max(footprint.x,footprint.y));
+      return side*smoothstep(0.055,0.14,wp.y)*(1.0-smoothstep(1.48,1.68,wp.y));
+    }
     struct WaveSurface {
-      float keep, delta, phase, roll, strength, score;
+      float keep, delta, phase, roll, strength, score, vehicle;
       int mode, target;
     };
     WaveSurface sampleWaves(vec3 wp, int splatSeason) {
@@ -175,6 +186,7 @@ function installSeasonShader(spark) {
       float edgeScore = 0.0, edgeDelta = 0.0, edgePhase = 0.0, edgeRoll = 0.0, edgeStrength = 0.0;
       int edgeMode = -1, edgeTarget = -1;
       bool useTexture = waveCount>${fastWaves};
+      float vehicle=vehicleCoverage(wp);
       // Composite newest to oldest. Each wave covers earlier waves wherever it has arrived.
       for (int i=waveCount-1;i>=0;i--) {
         vec4 state = useTexture ? texelFetch(waveData,ivec2(1,i),0) : waveStates[i];
@@ -194,8 +206,9 @@ function installSeasonShader(spark) {
           }
           float scale = small ? 0.57 : 1.0;
           float band = small ? 0.19 : 0.25;
+          float overlap=0.11+${CFG.vehicle.overlap}*vehicle*smoothstep(0.03,0.16,t);
           float warp = state.w*smoothstep(0.04,0.24,t);
-          if (splatSeason!=target && delta<-0.11-band-1.24*scale*warp) {
+          if (splatSeason!=target && delta<-overlap-band-1.24*scale*warp) {
             uncovered=0.0;
             break;
           }
@@ -205,8 +218,8 @@ function installSeasonShader(spark) {
             delta += scale*(0.98*roll+0.26*curl)*warp;
             score = strength*ridge(delta/scale+0.45,2.65);
           }
-          covered = 1.0-smoothstep(-band,band,delta-0.11);
-          retained = smoothstep(-band,band,delta+0.11);
+          covered = 1.0-smoothstep(-band,band,delta-overlap);
+          retained = smoothstep(-band,band,delta+overlap);
           delta /= scale;
         } else if (mode==1) {
           float field = wp.x+0.24*wp.y-0.29*wp.z
@@ -235,10 +248,11 @@ function installSeasonShader(spark) {
         if (uncovered<0.001) break;
       }
       if (splatSeason==baseSeason) keep += uncovered;
-      return WaveSurface(min(1.0,keep),edgeDelta,edgePhase,edgeRoll,edgeStrength,edgeScore,edgeMode,edgeTarget);
+      return WaveSurface(min(1.0,keep),edgeDelta,edgePhase,edgeRoll,edgeStrength,edgeScore,vehicle,edgeMode,edgeTarget);
     }
     void main() {
       vWaveOutline = 0.0;
+      vVehicleCoverage = vec2(0.0,1.0);
   `).replace(read, `
     float id = float(splatIndex);
     int splatSeason = id>=seasonRanges[2].x ? (id>=seasonRanges[3].x ? 3 : 2)
@@ -260,7 +274,9 @@ function installSeasonShader(spark) {
   `).replace(marker,`
     if (waveCount>0) {
       if (!enableExtSplats) surface = sampleWaves(center+worldOffset,splatSeason);
-      rgba.a *= surface.keep;
+      if (surface.keep<0.001) return;
+      if (surface.vehicle>0.0) vVehicleCoverage=vec2(surface.vehicle,surface.keep);
+      else rgba.a *= surface.keep;
       if (rgba.a<minAlpha) return;
       if (surface.mode==0 || surface.mode==4) {
           float d = surface.delta, strength = surface.strength;
@@ -280,7 +296,7 @@ function installSeasonShader(spark) {
             if ((hash & ${CFG.waveOutlineMask}u)==0u && size>0.028 && size<0.34) {
               vWaveOutline = reveal;
             } else {
-              rgba.a *= 1.0-0.24*reveal;
+              rgba.a *= 1.0-0.24*reveal*(1.0-surface.vehicle);
             }
           }
       } else if (surface.mode==1) {
@@ -293,12 +309,19 @@ function installSeasonShader(spark) {
   `);
   spark.material.fragmentShader = fragment.replace("void main() {",`
     flat in float vWaveOutline;
+    flat in vec2 vVehicleCoverage;
     void main() {
   `).replace(fragmentMarker,`
+    if (vVehicleCoverage.x>0.0 && vVehicleCoverage.y<1.0) {
+      // Mix transmittance after Gaussian falloff so an opaque panel keeps its coverage.
+      float densityAlpha=1.0-pow(max(0.0001,1.0-rgba.a),vVehicleCoverage.y);
+      rgba.a=mix(rgba.a*vVehicleCoverage.y,densityAlpha,vVehicleCoverage.x);
+    }
     if (vWaveOutline > 0.0) {
       float rim = 1.0-smoothstep(0.10,0.39,abs(sqrt(z2)-1.49));
       float detail = min(0.82,vRgba.a)*rim;
-      rgba.a = mix(rgba.a,max(rgba.a*0.45,detail),vWaveOutline*0.89);
+      float centerAlpha=rgba.a*mix(0.45,1.0,vVehicleCoverage.x);
+      rgba.a = mix(rgba.a,max(centerAlpha,detail),vWaveOutline*0.89);
       float tone = dot(rgba.rgb,vec3(0.213,0.715,0.072));
       float edge = mix(0.67,0.25,smoothstep(0.28,0.72,tone));
       rgba.rgb = mix(rgba.rgb,vec3(edge),rim*vWaveOutline*0.66);
