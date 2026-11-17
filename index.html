@@ -1,0 +1,1059 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Garage Library · Four Seasons</title>
+<!-- Copyright (c) 2026 xibihe · https://github.com/xibihe · SPDX-License-Identifier: MIT -->
+<link rel="icon" href="data:,">
+<style>
+:root {color-scheme:dark;font:14px/1.5 Inter,system-ui,sans-serif;background:#111311;color:#eeeee8}
+* {box-sizing:border-box}
+body {margin:0;min-height:100dvh;overflow:hidden}
+#screen {position:fixed;inset:0;display:grid;place-items:center;background:#101210}
+canvas {display:block;width:min(100vw,177.7778dvh);aspect-ratio:16/9;cursor:crosshair;touch-action:none;outline:none}
+canvas.dragging {cursor:grabbing}
+.top,.dock {position:fixed;left:0;right:0}
+.top {top:0;display:flex;justify-content:space-between;align-items:start;padding:26px 32px 45px;pointer-events:none;background:linear-gradient(#111613bd,transparent)}
+h1 {font-size:20px;font-weight:520;letter-spacing:.09em;margin:0}
+.byline {display:inline-block;margin-top:3px;color:#bdc7ba;font-size:12px;text-decoration:none;pointer-events:auto}
+.byline:hover {text-decoration:underline}
+#status {color:#d4d8cc;margin:4px 0 0;font-size:13px}
+#perf {margin-top:3px;font-size:12px;color:#d6ded0;font-variant-numeric:tabular-nums}
+.dock {bottom:0;background:linear-gradient(0deg,#0d100ff2,#0d100fc9 60%,transparent);padding:38px 32px 22px}
+.marks {display:flex;align-items:center;gap:8px}
+.marks button {color:#b8c0b5;padding:4px 10px;font-size:12px}
+.marks button[aria-current="true"] {color:#fff8dc;border-color:#ddd2a783}
+.controls,.options,.actions {display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.controls {justify-content:space-between;gap:12px}
+button,select,.save {font:inherit;color:inherit;border:1px solid #d4ded14d;background:#19211ec9;border-radius:5px;padding:6px 10px;cursor:pointer;white-space:nowrap}
+button:hover:not(:disabled),select:hover:not(:disabled),.save:hover {border-color:#eee9d7b5;background:#29342d}
+button:focus-visible,select:focus-visible,.save:focus-visible {outline:2px solid #ecdfb6;outline-offset:2px}
+button:disabled,select:disabled {opacity:.43;cursor:default}
+label {white-space:nowrap;color:#d6dbd0;font-size:12px}
+.save {text-decoration:none}
+#message {min-height:1.4em;color:#d4dacc;margin:8px 0 0;font-size:12px}
+.shot-panel summary {list-style:none;cursor:pointer;font:inherit;border:1px solid #d4ded14d;background:#19211ec9;border-radius:5px;padding:6px 10px}
+.shot-panel summary::-webkit-details-marker {display:none}
+.shot-sheet {position:absolute;bottom:calc(100% - 20px);left:32px;width:min(365px,calc(100vw - 44px));padding:12px;background:#171e1bf5;border:1px solid #d4ded14d;border-radius:7px}
+.shot-sheet p {margin:0 0 8px;color:#c1cbbd;font-size:12px}
+#shotList {display:flex;flex-wrap:wrap;gap:6px;max-height:120px;overflow:auto;margin-bottom:10px}
+#shotList:empty {margin:0}
+#shotList button[aria-pressed="true"] {color:#fff8dc;border-color:#ddd2a783}
+.shot-actions {display:flex;flex-wrap:wrap;gap:6px}
+body.clean .chrome {display:none}
+@media(max-width:700px) {.top{padding:16px}.dock{padding:24px 16px 14px}.shot-sheet{left:16px}.controls{gap:8px}.options,.actions{gap:6px}button,select,.save{padding:5px 7px}}
+</style>
+<script type="importmap">{"imports":{
+  "three":"https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+  "@sparkjsdev/spark":"https://sparkjs.dev/releases/spark/2.0.0/spark.module.js"
+}}</script>
+</head>
+<body>
+<main id="screen" aria-label="Four Seasons scene"></main>
+<div class="top chrome"><div><h1>Garage Library · Four Seasons</h1><a class="byline" href="https://github.com/xibihe" target="_blank" rel="noopener noreferrer">© 2026 xibihe</a><p id="status" role="status">Loading the seasons…</p></div><div id="perf"></div></div>
+<div class="dock chrome">
+
+  <div class="controls">
+    <div class="options">
+      <div class="marks" aria-label="Choose a season">
+        <button data-season="0" disabled>Spring</button><button data-season="1" disabled>Summer</button><button data-season="2" disabled>Autumn</button><button data-season="3" disabled>Winter</button>
+      </div>
+      <details id="shotPanel" class="shot-panel">
+        <summary>Camera path</summary>
+        <div class="shot-sheet">
+          <p>Views play in the order they were saved. Select a view to revisit it, then adjust the camera to update it.</p>
+          <div id="shotList" aria-label="Saved camera views"></div>
+          <div class="shot-actions">
+            <button id="saveShot" disabled>Save current view</button><button id="playShots" disabled>Play path</button>
+            <button id="replaceShot" disabled>Update selected</button><button id="deleteShot" disabled>Delete selected</button>
+          </div>
+        </div>
+      </details>
+    </div>
+    <div class="actions"><button id="resetView" disabled>Reset camera</button><label>Resolution <select id="resolution" disabled>
+      <option value="4k">4K</option><option value="1440">1440p</option><option value="1080">1080p</option>
+    </select></label><button id="record" disabled>Record 4K · 60 fps</button><a id="save" class="save" hidden>Download video</a><button id="hide" disabled>Hide interface</button></div>
+  </div>
+  <p id="message">Preparing the full-resolution splats.</p>
+</div>
+<script type="module">
+import * as THREE from "three";
+import { SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
+
+// xibihe's saved views in capture order: x, y, z, pitch, yaw.
+const DEFAULT_CAMERA_PATH = [
+  [-3.232663623013049,2.4210701632553393,6.996520580660127,-0.16074519597871312,5.660161713393754],
+  [4.132285388412443,1.5173493618208063,5.1596699300745765,-0.11724128972871321,6.841726166518753],
+  [2.595822445545748,3.3947518320877026,-6.0993961140043105,-0.2955908991037133,8.914655854018745],
+  [-5.160706244009376,3.495645060910432,-5.738817321233598,-0.26258699285371334,10.06268319776876],
+  [-4.954996390252931,0.9805839037537242,6.594383117449661,0.04247355402128669,11.754687104018755],
+];
+
+const CFG = {
+  assets:[
+    {name:"Spring", file:"./season-1.spz"}, {name:"Summer", file:"./season-2.spz"},
+    {name:"Autumn", file:"./season-3.spz"}, {name:"Winter", file:"./season-4.spz"}
+  ],
+  fps:60,
+  formats:{
+    "4k":{name:"4K",width:3840,height:2160,bitrate:85000000,codec:"avc1.640034"},
+    "1440":{name:"1440p",width:2560,height:1440,bitrate:54000000,codec:"avc1.640033"},
+    "1080":{name:"1080p",width:1920,height:1080,bitrate:36000000,codec:"avc1.64002a"},
+  },
+  transitionMode:4,                  // Small ripples are the release preset.
+  effectSeconds:1.48,                 // Duration of the other shader modes, in seconds.
+  waterSeconds:{large:2.75,small:3},  // Large wave crossing time and small ripple duration.
+  waterAcceleration:0.66,            // Seconds for a large wave to reach cruising speed.
+  waveOutlineMask:15,                // Use 15 or 31 to show a fixed subset of splat outlines.
+  expectedSplats:2000000,             // Original count per SPZ. Recording uses the full count.
+  camera:{
+    eye:[-4.0625,1.96,6.4406],target:[-0.27,1.84,-2.4], // Position and target for Reset camera.
+    turn:0.0035, speed:1.55,        // Radians per pixel of dragging and meters per second of walking.
+    limits:[[-7.4,0.28,-9.6],[5.3,6.75,7.0]], // Camera movement bounds.
+  },
+  gait:{amount:0.43,angle:0.40,damping:0.13}, // Walking motion scale, angular scale, and damping in seconds.
+  shotPath:{pace:1.65,turnPace:0.84,minSeconds:1.4}, // Meters and radians per second, and minimum segment duration.
+  sortInterval:150,                  // Minimum milliseconds between depth sorts while moving.
+  sortDistance:0.06,                 // Camera movement in meters that triggers a depth sort.
+  pickStride:97,                     // Pointer picking sample stride. Rendering uses every splat.
+  roomBounds:[[-8.8,-0.2,-10.5],[5.9,7.5,7.2]],
+  smallWaveReach:12.6,                // Reach of the secondary ripples.
+  smallWaveSources:[                 // Secondary sources as x, y, z and normalized start delay.
+    [ 2.90, 1.20, 2.1, 0.22],
+    [-2.50, 2.65,-5.5, 0.34],
+    [ 3.80, 3.45,-3.0, 0.44],
+  ],
+  fpsWindow:800,
+};
+
+const el = id => document.getElementById(id);
+const controls = ["resolution","record","hide","resetView"].map(el);
+const marks = [...document.querySelectorAll("[data-season]")];
+const seasonRanges = {value:CFG.assets.map(()=>new THREE.Vector2())};
+const activeMask = {value:1}, baseSeason = {value:0};
+const worldOffset = {value:new THREE.Vector3()};
+const smallOrigins = {value:CFG.smallWaveSources.map(values=>new THREE.Vector3(...values))};
+const fastWaves=8;
+const waveOrigins = {value:new Float32Array(fastWaves*4)};
+const waveStates = {value:new Float32Array(fastWaves*4)};
+const smallRadii = {value:new Float32Array(fastWaves*4)};
+const waveData = {value:null}, waveCount = {value:0};
+const effectUniforms = {seasonRanges,activeMask,baseSeason,worldOffset,smallOrigins,
+  waveOrigins,waveStates,smallRadii,waveData,waveCount};
+
+function installSeasonShader(spark) {
+  const marker = "vRgba = rgba;";
+  const read = "ivec3 texCoord = splatTexCoord(int(splatIndex));";
+  const extRead = "uvec4 ext2 = texelFetch(extSplats2, texCoord, 0);";
+  const shader = spark.material.vertexShader;
+  const fragment = spark.material.fragmentShader;
+  const fragmentMarker = "if (rgba.a < minAlpha) {";
+  if (!shader.includes(marker) || !shader.includes(read) || !shader.includes(extRead) || !fragment.includes(fragmentMarker)) {
+    throw Error("The renderer is incompatible with the season shader.");
+  }
+  spark.material.vertexShader = shader.replace("void main() {", `
+    uniform vec2 seasonRanges[4];
+    uniform vec3 worldOffset, smallOrigins[3];
+    uniform int activeMask, baseSeason, waveCount;
+    uniform vec4 waveOrigins[${fastWaves}], waveStates[${fastWaves}], smallRadii[${fastWaves}];
+    uniform sampler2D waveData;
+    flat out float vWaveOutline;
+    float waveDistance(vec3 p, vec3 seed) {
+      return length((p - seed) * vec3(1.0, 0.75, 1.0));
+    }
+    float ridge(float x, float width) {
+      return 1.0-smoothstep(0.0,width,abs(x));
+    }
+    struct WaveSurface {
+      float keep, delta, phase, roll, strength, score;
+      int mode, target;
+    };
+    WaveSurface sampleWaves(vec3 wp, int splatSeason) {
+      float keep = 0.0;
+      float uncovered = 1.0;
+      float edgeScore = 0.0, edgeDelta = 0.0, edgePhase = 0.0, edgeRoll = 0.0, edgeStrength = 0.0;
+      int edgeMode = -1, edgeTarget = -1;
+      bool useTexture = waveCount>${fastWaves};
+      // Composite newest to oldest. Each wave covers earlier waves wherever it has arrived.
+      for (int i=waveCount-1;i>=0;i--) {
+        vec4 state = useTexture ? texelFetch(waveData,ivec2(1,i),0) : waveStates[i];
+        int mode = int(state.x), target = int(state.y);
+        float t = state.z, strength = state.w*uncovered;
+        if (t<=0.0) continue;
+        float delta = 0.0, retained = 0.0, covered = 0.0, score = 0.0, roll = 0.0;
+        if (mode==0 || mode==4) {
+          bool small = mode==4;
+          vec4 wave = useTexture ? texelFetch(waveData,ivec2(0,i),0) : waveOrigins[i];
+          delta = waveDistance(wp,wave.xyz)-wave.w;
+          if (small) {
+            vec3 radii = useTexture ? texelFetch(waveData,ivec2(2,i),0).xyz : smallRadii[i].xyz;
+            for (int j=0;j<3;j++) {
+              if (radii[j]>-1.0) delta=min(delta,waveDistance(wp,smallOrigins[j])-radii[j]);
+            }
+          }
+          float scale = small ? 0.57 : 1.0;
+          float band = small ? 0.19 : 0.25;
+          float warp = state.w*smoothstep(0.04,0.24,t);
+          if (splatSeason!=target && delta<-0.11-band-1.24*scale*warp) {
+            uncovered=0.0;
+            break;
+          }
+          if (delta>-3.7*scale && delta<1.95*scale && state.w>0.0) {
+            roll = sin(dot(wp,vec3(0.69,0.56,-0.74))/scale-4.8*t);
+            float curl = sin(dot(wp,vec3(1.78,-1.13,0.85))/scale+5.4*t+1.3*roll);
+            delta += scale*(0.98*roll+0.26*curl)*warp;
+            score = strength*ridge(delta/scale+0.45,2.65);
+          }
+          covered = 1.0-smoothstep(-band,band,delta-0.11);
+          retained = smoothstep(-band,band,delta+0.11);
+          delta /= scale;
+        } else if (mode==1) {
+          float field = wp.x+0.24*wp.y-0.29*wp.z
+            +0.42*sin(0.85*wp.z+1.8*wp.y)+0.19*sin(wp.y*3.9-wp.z*2.1);
+          delta = field-mix(-13.0,11.0,smoothstep(0.0,1.0,t));
+          covered = 1.0-smoothstep(-0.8,0.53,delta-0.20);
+          retained = smoothstep(-0.72,0.68,delta+0.20);
+          score = strength*exp(-2.0*abs(delta));
+        } else if (mode==2) {
+          float field = 0.50+0.18*sin(wp.x*1.0+wp.z*0.42)
+            +0.13*sin(wp.z*1.24+wp.y*0.78)+0.083*sin(wp.y*3.2+wp.x*2.9-wp.z*0.7);
+          delta = field-mix(-0.18,1.18,t);
+          covered = 1.0-smoothstep(-0.12,0.14,delta-0.055);
+          retained = smoothstep(-0.13,0.13,delta+0.055);
+          score = strength*exp(-22.0*abs(delta));
+        } else {
+          covered = smoothstep(0.02,0.77,t);
+          retained = 1.0-smoothstep(0.18,0.98,t);
+        }
+        if (score>edgeScore) {
+          edgeScore=score; edgeDelta=delta; edgePhase=t; edgeRoll=roll;
+          edgeStrength=strength; edgeMode=mode; edgeTarget=target;
+        }
+        if (splatSeason==target) keep += uncovered*covered;
+        uncovered *= retained;
+        if (uncovered<0.001) break;
+      }
+      if (splatSeason==baseSeason) keep += uncovered;
+      return WaveSurface(min(1.0,keep),edgeDelta,edgePhase,edgeRoll,edgeStrength,edgeScore,edgeMode,edgeTarget);
+    }
+    void main() {
+      vWaveOutline = 0.0;
+  `).replace(read, `
+    float id = float(splatIndex);
+    int splatSeason = id>=seasonRanges[2].x ? (id>=seasonRanges[3].x ? 3 : 2)
+                                          : (id>=seasonRanges[1].x ? 1 : 0);
+    if ((activeMask & (1<<splatSeason))==0 || id>=seasonRanges[splatSeason].y) return;
+    ${read}
+    WaveSurface surface;
+  `).replace(extRead,`
+    if (waveCount>0) {
+      vec3 point = unpackSplatExtCenterAlpha(ext1).xyz;
+      vec3 eyePoint = (enableCovSplats ? renderToViewBasis*point : quatVec(renderToViewQuat,point))+renderToViewPos;
+      if (eyePoint.z>=0.0) return;
+      vec4 clipPoint = projectionMatrix*vec4(eyePoint,1.0);
+      if (abs(clipPoint.z)>=clipPoint.w || any(greaterThan(abs(clipPoint.xy),vec2(clipXY*clipPoint.w)))) return;
+      surface = sampleWaves(point+worldOffset,splatSeason);
+      if (surface.keep<0.001) return;
+    }
+    ${extRead}
+  `).replace(marker,`
+    if (waveCount>0) {
+      if (!enableExtSplats) surface = sampleWaves(center+worldOffset,splatSeason);
+      rgba.a *= surface.keep;
+      if (rgba.a<minAlpha) return;
+      if (surface.mode==0 || surface.mode==4) {
+          float d = surface.delta, strength = surface.strength;
+          float lip = ridge(d-0.12,0.48);
+          float body = ridge(d+0.12,0.90);
+          float backwash = ridge(d+1.48-0.45*surface.phase+0.15*surface.roll,0.46);
+          float trough = ridge(d+0.62,0.62);
+          rgba.rgb *= 1.0-strength*(0.23*trough+0.06*backwash);
+          float sheen = strength*(0.22*lip+0.09*body);
+          rgba.rgb = mix(rgba.rgb,max(rgba.rgb,vec3(0.84,0.92,0.97)),sheen);
+          // Briefly expose stable splat outlines behind the wavefront.
+          if (splatSeason==surface.target && d< -0.18 && d> -1.72 && !enableCovSplats) {
+            uint hash = (splatIndex+1u)*2654435761u;
+            hash = hash ^ (hash >> 16u);
+            float size = max(scales.x,max(scales.y,scales.z));
+            float reveal = strength*ridge(d+0.95,0.77);
+            if ((hash & ${CFG.waveOutlineMask}u)==0u && size>0.028 && size<0.34) {
+              vWaveOutline = reveal;
+            } else {
+              rgba.a *= 1.0-0.24*reveal;
+            }
+          }
+      } else if (surface.mode==1) {
+        rgba.rgb = mix(rgba.rgb,vec3(0.94,0.90,0.78),0.34*surface.score);
+      } else if (surface.mode==2) {
+        rgba.rgb = mix(rgba.rgb,vec3(0.83,0.87,0.83),0.30*surface.score);
+      }
+    }
+    ${marker}
+  `);
+  spark.material.fragmentShader = fragment.replace("void main() {",`
+    flat in float vWaveOutline;
+    void main() {
+  `).replace(fragmentMarker,`
+    if (vWaveOutline > 0.0) {
+      float rim = 1.0-smoothstep(0.10,0.39,abs(sqrt(z2)-1.49));
+      float detail = min(0.82,vRgba.a)*rim;
+      rgba.a = mix(rgba.a,max(rgba.a*0.45,detail),vWaveOutline*0.89);
+      float tone = dot(rgba.rgb,vec3(0.213,0.715,0.072));
+      float edge = mix(0.67,0.25,smoothstep(0.28,0.72,tone));
+      rgba.rgb = mix(rgba.rgb,vec3(edge),rim*vWaveOutline*0.66);
+    }
+    ${fragmentMarker}
+  `);
+}
+
+function prepareShotPath(shots) {
+  const knots=shots.map(pose=>({pose:pose.slice(),time:0}));
+  for (let i=1;i<knots.length;i++) {
+    const {pose:from,time}=knots[i-1], to=knots[i].pose;
+    // Use the shortest yaw rotation across ±180°.
+    const yaw=to[4]-from[4];
+    to[4]=from[4]+Math.atan2(Math.sin(yaw),Math.cos(yaw));
+    const distance=Math.hypot(to[0]-from[0],to[1]-from[1],to[2]-from[2]);
+    const angle=Math.hypot(to[3]-from[3],to[4]-from[4]);
+    knots[i].time=time+Math.max(CFG.shotPath.minSeconds,distance/CFG.shotPath.pace,angle/CFG.shotPath.turnPace);
+  }
+  for (const [i,knot] of knots.entries()) {
+    const previous=knots[i-1], next=knots[i+1];
+    knot.speed=knot.pose.map((value,axis)=>{
+      if (!previous || !next) return 0;
+      const before=(value-previous.pose[axis])/(knot.time-previous.time);
+      const after=(next.pose[axis]-value)/(next.time-knot.time);
+      return before*after>0 ? 2*before*after/(before+after) : 0;
+    });
+  }
+  return knots;
+}
+
+function smallRadius(t) {
+  if (t<0) return -1000;
+  const u=THREE.MathUtils.clamp(t,0,1);
+  const eased=u*u*u*(10+u*(-15+6*u));
+  return THREE.MathUtils.lerp(-0.25,CFG.smallWaveReach,
+    0.7*eased+0.3*THREE.MathUtils.smoothstep(u,0.17,0.58));
+}
+
+function sortOrdersInWorker() {
+  let clouds, depths, fullCapacity;
+  const bins=new Uint32Array(65536);
+  const rowSize=16384;
+  const order=count=>new Uint32Array(Math.ceil(count/rowSize)*rowSize);
+  self.onmessage=({data})=>{
+    if (data.clouds) {
+      clouds=data.clouds;
+      fullCapacity=data.fullCapacity;
+      const maxCount=Math.max(...clouds.map(cloud=>cloud.count));
+      depths=new Uint16Array(maxCount*clouds.length);
+      return;
+    }
+    const {season,origin,all}=data;
+    const [x,y,z]=origin;
+    const next=(season+1)%clouds.length;
+    const group=all ? clouds : [clouds[season],clouds[next]];
+    bins.fill(0);
+    let index=0;
+    for (const {centers,count} of group) {
+      for (let i=0;i<count;i++) {
+        const p=i*3;
+        const dx=centers[p]-x, dy=centers[p+1]-y, dz=centers[p+2]-z;
+        const depth=Math.min(65535,Math.floor((dx*dx+dy*dy+dz*dz)*64));
+        depths[index++]=depth;
+        bins[depth]++;
+      }
+    }
+    let offset=0;
+    for (let i=bins.length-1;i>=0;i--) {
+      const count=bins[i];
+      bins[i]=offset;
+      offset+=count;
+    }
+    const adjacent=all ? new Uint32Array(fullCapacity) : order(offset);
+    index=0;
+    for (const {base,count} of group) {
+      for (let i=0;i<count;i++) adjacent[bins[depths[index++]]++]=base+i;
+    }
+    if (all) {
+      self.postMessage({origin,full:adjacent},[adjacent.buffer]);
+      return;
+    }
+    const [first,second]=group.map(cloud=>order(cloud.count));
+    let a=0, b=0;
+    const {base,count}=group[0];
+    for (let i=0;i<offset;i++) {
+      const id=adjacent[i];
+      if (id>=base && id<base+count) first[a++]=id;
+      else second[b++]=id;
+    }
+    self.postMessage({season,next,origin,first,second,adjacent},[first.buffer,second.buffer,adjacent.buffer]);
+  };
+}
+
+async function main() {
+  const renderer = new THREE.WebGLRenderer({antialias:false, alpha:false, powerPreference:"high-performance"});
+  renderer.setClearColor(0x141713);
+  let format=CFG.formats["4k"];
+  renderer.setDrawingBufferSize(format.width,format.height,1);
+  el("screen").append(renderer.domElement);
+  const canvas = renderer.domElement;
+  canvas.tabIndex=0;
+  canvas.setAttribute("aria-label","Four Seasons scene. Drag to look around and click to change season.");
+  const camera = new THREE.PerspectiveCamera(47,16/9,0.08,70);
+  camera.rotation.order="YXZ";
+  camera.position.fromArray(CFG.camera.eye);
+  camera.lookAt(...CFG.camera.target);
+  camera.updateMatrixWorld(true);
+  const bodyPosition=camera.position.clone();
+  const look=camera.rotation.clone();
+  const raycaster = new THREE.Raycaster();
+  const room = new THREE.Box3(...CFG.roomBounds.map(p=>new THREE.Vector3(...p)));
+  const viewLimits = new THREE.Box3(...CFG.camera.limits.map(p=>new THREE.Vector3(...p)));
+  const moveVector = new THREE.Vector3();
+  const gaitOffset = new THREE.Vector3();
+  let gaitPhase=0.9, gaitAmount=0, gaitPitch=0, gaitRoll=0;
+  const keys=new Set();
+  const moveKeys=["KeyW","KeyA","KeyS","KeyD","KeyQ","KeyE"];
+  let drag=null, previousTick=0;
+  const stage = new THREE.Scene();
+  let dirty = true;
+  function invalidate() {dirty=true;}
+  const stageSpark = new SparkRenderer({
+    renderer,sortRadial:true,enableLod:false,enableDriveLod:false,
+    accumExtSplats:true,preUpdate:false,extraUniforms:effectUniforms,onDirty:invalidate,
+  });
+  installSeasonShader(stageSpark);
+  stage.add(stageSpark);
+  const sources=CFG.assets.map(asset=>new SplatMesh({url:asset.file,extSplats:true,lod:false,raycastable:false}));
+  for (const mesh of sources) stage.add(mesh);
+
+  let ready=false, loaded=false, exporting=false;
+  let season=0, record=null;
+  const waves=[];
+  let outputURL="";
+  let encodedModule=null, batches=null;
+  let sortWorker=null, sortPending=false, lastSort=-Infinity;
+  let sampleStart=0, drawn=0;
+  let pickSamples=[];
+  const shotsKey="library-garage-camera-poses";
+  let shots=DEFAULT_CAMERA_PATH.map(pose=>pose.slice()), selectedShot=-1, shotPath=null;
+  try {
+    const saved=JSON.parse(localStorage.getItem(shotsKey)??"null");
+    if (Array.isArray(saved)) {
+      shots=saved.filter(pose=>Array.isArray(pose) && pose.length===5 && pose.every(Number.isFinite));
+    }
+  } catch {}
+  const message=text=>{el("message").textContent=text;};
+  const enable = value => {
+    controls.forEach(c=>{ c.disabled=!value; });
+    marks.forEach(c=>{ c.disabled=!value; });
+  };
+  function refreshControls() {
+    const next=waves.at(-1)?.target??season;
+    const names=[CFG.assets[season].name,...waves.map(wave=>CFG.assets[wave.target].name)];
+    const label=names.length>5 ? [names[0],"…",...names.slice(-3)].join(" → ") : names.join(" → ");
+    if (el("status").textContent!==label) el("status").textContent=label;
+    document.body.dataset.season=String(season);
+    document.body.dataset.next=String(next);
+    document.body.dataset.waveCount=String(waves.length);
+    for (const [i,mark] of marks.entries()) {
+      mark.setAttribute("aria-current",String(i===season));
+    }
+  }
+  function pickPoint(event) {
+    const rect=canvas.getBoundingClientRect();
+    raycaster.setFromCamera(new THREE.Vector2(
+      2*(event.clientX-rect.left)/rect.width-1,
+      1-2*(event.clientY-rect.top)/rect.height,
+    ),camera);
+    const ray=raycaster.ray;
+    const point=new THREE.Vector3();
+    let bestDepth=Infinity;
+    const samples=pickSamples[season];
+    for (let i=0;i<samples.length;i+=3) {
+      point.fromArray(samples,i).sub(ray.origin);
+      const depth=point.dot(ray.direction);
+      if (depth<0.45 || depth>=bestDepth) continue;
+      const tolerance=0.10 + depth*0.012;
+      if (point.lengthSq()-depth*depth<tolerance*tolerance) {
+        bestDepth=depth;
+      }
+    }
+    if (Number.isFinite(bestDepth)) return ray.at(bestDepth,point);
+    return ray.intersectBox(room,point) ?? ray.at(5,point);
+  }
+  function getVisibleReach(origin,from,next,reach) {
+    // Estimate visible reach from both seasons in the current view, excluding outliers.
+    const point=new THREE.Vector3();
+    const bins=new Uint32Array(Math.ceil(reach*2)+1);
+    const [sx,sy]=[camera.projectionMatrix.elements[0],camera.projectionMatrix.elements[5]];
+    let total=0;
+    for (const samples of [pickSamples[from],pickSamples[next]]) {
+      for (let i=0;i<samples.length;i+=3) {
+        point.fromArray(samples,i).applyMatrix4(camera.matrixWorldInverse);
+        const depth=-point.z;
+        if (depth<0.4 || Math.abs(point.x)*sx>depth || Math.abs(point.y)*sy>depth) continue;
+        const dx=samples[i]-origin.x, dy=(samples[i+1]-origin.y)*0.75, dz=samples[i+2]-origin.z;
+        const bin=Math.min(bins.length-1,Math.floor(2*Math.sqrt(dx*dx+dy*dy+dz*dz)));
+        bins[bin]++;
+        total++;
+      }
+    }
+    if (!total) return reach;
+    let seen=0;
+    for (let i=0;i<bins.length;i++) {
+      seen+=bins[i];
+      if (seen>=total*0.96) return Math.min(reach,Math.max(3,i*0.5+0.95));
+    }
+    return reach;
+  }
+  function startTransition(event) {
+    if (!ready || exporting) return;
+    const start=performance.now();
+    finishWaves(start);
+    const from=waves.at(-1)?.target??season;
+    const target=(from+1)%sources.length;
+    const mode=CFG.transitionMode;
+    const origin=pickPoint(event);
+    const dx=Math.max(Math.abs(origin.x-room.min.x),Math.abs(origin.x-room.max.x));
+    const dy=Math.max(Math.abs(origin.y-room.min.y),Math.abs(origin.y-room.max.y));
+    const dz=Math.max(Math.abs(origin.z-room.min.z),Math.abs(origin.z-room.max.z));
+    const reach=Math.hypot(dx,0.75*dy,dz)+1.25;
+    let speed=0, duration=mode===4 ? CFG.waterSeconds.small : CFG.effectSeconds;
+    if (mode===0) {
+      const visible=getVisibleReach(origin,from,target,reach);
+      const halfRamp=CFG.waterAcceleration*0.5;
+      speed=(visible+0.32)/(CFG.waterSeconds.large-halfRamp);
+      duration=(reach+0.32)/speed+halfRamp;
+    }
+    waves.push({origin,mode,target,start,duration,reach,speed});
+    if (waves.length===1 && !record) {sampleStart=0;drawn=0;}
+    refreshControls();
+    invalidate();
+  }
+  function finishWaves(time) {
+    const finished=waves.findLastIndex(wave=>time>=wave.start+1000*wave.duration);
+    if (finished<0) return;
+    season=waves[finished].target;
+    waves.splice(0,finished+1);
+    refreshControls();
+    invalidate();
+  }
+  function updateWaveUniforms(time) {
+    waveCount.value=waves.length;
+    activeMask.value=waves.reduce((mask,wave)=>mask | (1<<wave.target),1<<season);
+    baseSeason.value=season;
+    if (!waves.length) return;
+    const useTexture=waves.length>fastWaves;
+    if (useTexture && (!waveData.value || waveData.value.image.height<waves.length)) {
+      const height=THREE.MathUtils.ceilPowerOfTwo(waves.length);
+      waveData.value?.dispose();
+      waveData.value=new THREE.DataTexture(new Float32Array(12*height),3,height,THREE.RGBAFormat,THREE.FloatType);
+    }
+    const positions=useTexture ? waveData.value.image.data : waveOrigins.value;
+    const states=useTexture ? positions : waveStates.value;
+    const radii=useTexture ? positions : smallRadii.value;
+    for (const [i,wave] of waves.entries()) {
+      const elapsed=Math.max(0,(time-wave.start)/1000);
+      const t=Math.min(1,elapsed/wave.duration);
+      let radius=0;
+      if (wave.mode===0) {
+        const ramp=CFG.waterAcceleration;
+        // Integrate the initial acceleration and keep a constant speed past the scene edge.
+        radius=-0.32+wave.speed*(elapsed<ramp ? elapsed*elapsed/(2*ramp) : elapsed-ramp*0.5);
+      } else if (wave.mode===4) {
+        radius=smallRadius(t)+Math.max(0,wave.reach-CFG.smallWaveReach)*THREE.MathUtils.smoothstep(t,0.74,1);
+      }
+      const offset=(useTexture ? 12 : 4)*i;
+      const stateOffset=offset+(useTexture ? 4 : 0);
+      const radiiOffset=offset+(useTexture ? 8 : 0);
+      positions[offset]=wave.origin.x;
+      positions[offset+1]=wave.origin.y;
+      positions[offset+2]=wave.origin.z;
+      positions[offset+3]=radius;
+      states[stateOffset]=wave.mode;
+      states[stateOffset+1]=wave.target;
+      states[stateOffset+2]=t;
+      states[stateOffset+3]=THREE.MathUtils.smoothstep(t,0,0.055)*(1-THREE.MathUtils.smoothstep(t,0.77,1));
+      if (wave.mode===4) {
+        for (const [j,[,,,delay]] of CFG.smallWaveSources.entries()) {
+          radii[radiiOffset+j]=smallRadius((t-delay)/(1-delay));
+        }
+      }
+    }
+    if (useTexture) waveData.value.needsUpdate=true;
+  }
+
+  function updateCamera() {
+    camera.position.copy(bodyPosition).add(gaitOffset);
+    camera.rotation.set(look.x+gaitPitch,look.y,gaitRoll);
+    camera.updateMatrixWorld(true);
+    invalidate();
+  }
+  function updateWalking(seconds) {
+    if (!keys.size && gaitAmount===0) return;
+    const axis=(positive,negative)=>Number(keys.has(positive))-Number(keys.has(negative));
+    moveVector.set(axis("KeyD","KeyA"),axis("KeyE","KeyQ"),axis("KeyS","KeyW"));
+    moveVector.normalize().multiplyScalar(seconds*CFG.camera.speed).applyAxisAngle(camera.up,look.y);
+    const {x,z}=bodyPosition;
+    bodyPosition.add(moveVector).clamp(viewLimits.min,viewLimits.max);
+    const pace=seconds>0 ? Math.hypot(bodyPosition.x-x,bodyPosition.z-z)/seconds : 0;
+
+    // Manual walking motion inspired by Will Eastcott's splat-walk.
+    const walking=pace>0.02;
+    const cadence=1.3+0.41*(walking ? pace : CFG.camera.speed);
+    if (walking) gaitPhase+=cadence*seconds;
+    gaitAmount+=(Number(walking)-gaitAmount)*(1-Math.exp(-seconds/CFG.gait.damping));
+    if (!walking && gaitAmount<0.001) {
+      gaitPhase=0.9;
+      gaitAmount=0;
+    }
+    const phase=Math.PI*gaitPhase;
+    const stepTime=(gaitPhase%1)/(cadence*0.05);
+    const heel=stepTime**2*Math.exp(2*(1-stepTime));
+    const bob=-0.019*(Math.cos(2*phase)+0.16*Math.cos(4*phase+0.6));
+    const amount=gaitAmount*CFG.gait.amount;
+    gaitOffset.set(0.017*Math.sin(phase),bob-0.0016*heel,-0.006*Math.sin(2*phase))
+      .multiplyScalar(amount).applyAxisAngle(camera.up,look.y);
+    const angle=amount*CFG.gait.angle;
+    gaitPitch=THREE.MathUtils.degToRad(angle*(0.5*Math.sin(2*phase-0.7)-0.16*heel));
+    gaitRoll=THREE.MathUtils.degToRad(angle*0.6*Math.sin(phase+0.3));
+    updateCamera();
+  }
+  function resetGait() {
+    gaitPhase=0.9;
+    gaitAmount=gaitPitch=gaitRoll=0;
+    gaitOffset.set(0,0,0);
+  }
+  function setCameraPose(pose) {
+    bodyPosition.fromArray(pose).clamp(viewLimits.min,viewLimits.max);
+    look.set(pose[3],pose[4],0);
+    updateCamera();
+  }
+  function saveShotList() {
+    try { localStorage.setItem(shotsKey,JSON.stringify(shots)); } catch {}
+    renderShotList();
+  }
+  function refreshShotPanel() {
+    for (const [index,button] of [...el("shotList").children].entries()) {
+      button.setAttribute("aria-pressed",String(index===selectedShot));
+    }
+    el("saveShot").disabled=!ready || Boolean(shotPath);
+    el("playShots").disabled=!ready || (!shotPath && shots.length<2);
+    el("playShots").textContent=shotPath ? "Stop path" : "Play path";
+    el("replaceShot").disabled=el("deleteShot").disabled=!ready || selectedShot<0 || Boolean(shotPath);
+  }
+  function renderShotList() {
+    el("shotList").replaceChildren(...shots.map((_,index)=>{
+      const button=document.createElement("button");
+      button.textContent="View "+(index+1);
+      button.onclick=()=>{
+        stopShotPath();
+        selectedShot=index;
+        resetGait();
+        setCameraPose(shots[index]);
+        refreshShotPanel();
+      };
+      return button;
+    }));
+    refreshShotPanel();
+  }
+  function stopShotPath() {
+    if (!shotPath) return;
+    shotPath=null;
+    refreshShotPanel();
+  }
+  function updateShotPath(time) {
+    const {knots,start,views}=shotPath;
+    const seconds=Math.max(0,(time-start)/1000);
+    const last=knots.at(-1);
+    if (seconds>=last.time) {
+      setCameraPose(last.pose);
+      selectedShot=views===shots ? knots.length-1 : -1;
+      stopShotPath();
+      return;
+    }
+    const next=knots.findIndex(knot=>knot.time>seconds);
+    const a=knots[next-1], b=knots[next];
+    const duration=b.time-a.time, u=(seconds-a.time)/duration;
+    const u2=u*u, u3=u2*u;
+    setCameraPose(a.pose.map((value,i)=>
+      (2*u3-3*u2+1)*value+(u3-2*u2+u)*duration*a.speed[i]+
+      (-2*u3+3*u2)*b.pose[i]+(u3-u2)*duration*b.speed[i]
+    ));
+  }
+  const currentPose=()=>[...bodyPosition.toArray(),look.x,look.y];
+  el("saveShot").onclick=()=>{
+    shots.push(currentPose());
+    selectedShot=shots.length-1;
+    saveShotList();
+  };
+  el("replaceShot").onclick=()=>{
+    shots[selectedShot]=currentPose();
+    saveShotList();
+  };
+  el("deleteShot").onclick=()=>{
+    shots.splice(selectedShot,1);
+    selectedShot=-1;
+    saveShotList();
+  };
+  function playShotPath(views=shots) {
+    if (!ready || exporting || views.length<2) return;
+    keys.clear();
+    resetGait();
+    const knots=prepareShotPath(views);
+    shotPath={knots,start:performance.now(),views};
+    selectedShot=-1;
+    setCameraPose(knots[0].pose);
+    refreshShotPanel();
+  }
+  el("playShots").onclick=()=>{
+    if (shotPath) stopShotPath();
+    else playShotPath();
+  };
+  canvas.addEventListener("pointerdown",event=>{
+    if (!ready || drag || (event.button!==0 && event.button!==2)) return;
+    canvas.focus({preventScroll:true});
+    canvas.setPointerCapture(event.pointerId);
+    drag={id:event.pointerId,x:event.clientX,y:event.clientY,moved:false,pan:event.button===2||event.shiftKey};
+  });
+  canvas.addEventListener("pointermove",event=>{
+    if (drag?.id!==event.pointerId) return;
+    const dx=event.clientX-drag.x, dy=event.clientY-drag.y;
+    if (!drag.moved && Math.hypot(dx,dy)<4) return;
+    stopShotPath();
+    drag.moved=true;
+    canvas.classList.add("dragging");
+    drag.x=event.clientX;
+    drag.y=event.clientY;
+    if (drag.pan) {
+      moveVector.set(-dx*0.008,dy*0.008,0).applyQuaternion(camera.quaternion);
+      bodyPosition.add(moveVector).clamp(viewLimits.min,viewLimits.max);
+    } else {
+      look.y-=dx*CFG.camera.turn;
+      look.x=THREE.MathUtils.clamp(look.x-dy*CFG.camera.turn,-1.54,1.54);
+    }
+    updateCamera();
+  });
+  canvas.addEventListener("pointerup",event=>{
+    if (drag?.id!==event.pointerId) return;
+    const tap=!drag.moved && !drag.pan && Math.hypot(event.clientX-drag.x,event.clientY-drag.y)<4;
+    drag=null;
+    canvas.classList.remove("dragging");
+    if (tap) startTransition(event);
+  });
+  canvas.addEventListener("lostpointercapture",()=>{
+    drag=null;
+    canvas.classList.remove("dragging");
+  });
+  canvas.addEventListener("contextmenu",event=>event.preventDefault());
+  canvas.addEventListener("wheel",event=>{
+    if (!ready) return;
+    event.preventDefault();
+    stopShotPath();
+    const pixels=event.deltaY*(event.deltaMode===1?16:(event.deltaMode===2?canvas.clientHeight:1));
+    const distance=THREE.MathUtils.clamp(-pixels*0.007,-0.85,0.85);
+    camera.getWorldDirection(moveVector);
+    bodyPosition.addScaledVector(moveVector,distance).clamp(viewLimits.min,viewLimits.max);
+    updateCamera();
+  },{passive:false});
+  el("resetView").addEventListener("click",()=>{
+    stopShotPath();
+    bodyPosition.fromArray(CFG.camera.eye);
+    camera.position.copy(bodyPosition);
+    camera.lookAt(...CFG.camera.target);
+    look.copy(camera.rotation);
+    resetGait();
+    updateCamera();
+  });
+
+  function getMuxer() {
+    encodedModule ??= import("https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/build/mp4-muxer.mjs").catch(error=>{
+      encodedModule=null;
+      throw error;
+    });
+    return encodedModule;
+  }
+  async function startRecord(format) {
+    const {Muxer,ArrayBufferTarget}=await getMuxer();
+    const config={
+      codec:format.codec,width:format.width,height:format.height,
+      bitrate:format.bitrate,framerate:CFG.fps,latencyMode:"realtime",
+      hardwareAcceleration:"prefer-hardware",avc:{format:"avc"},
+    };
+    if (!globalThis.VideoEncoder || !(await VideoEncoder.isConfigSupported(config)).supported) {
+      throw Error("This device cannot start "+format.name+" H.264 encoding.");
+    }
+    const output=new ArrayBufferTarget();
+    const muxer=new Muxer({target:output,video:{codec:"avc",width:format.width,height:format.height},
+                           fastStart:"in-memory",firstTimestampBehavior:"offset"});
+    const clip={muxer,output,format,encoder:null,origin:null,lastSlot:-1,encoded:0,error:null};
+    clip.encoder=new VideoEncoder({
+      output(chunk,metadata) {muxer.addVideoChunk(chunk,metadata);clip.encoded++;},
+      error(error) {clip.error=error;},
+    });
+    clip.encoder.configure(config);
+    return clip;
+  }
+  async function finishRecord() {
+    const clip=record;
+    if (!clip) return;
+    record=null; exporting=true;
+    el("record").disabled=true;
+    invalidate();
+    try {
+      message("Finalizing the MP4…");
+      await clip.encoder.flush();
+      if (clip.error) throw clip.error;
+      clip.encoder.close();
+      if (!clip.encoded) throw Error("No frames were captured.");
+      clip.muxer.finalize();
+      if (outputURL) URL.revokeObjectURL(outputURL);
+      outputURL=URL.createObjectURL(new Blob([clip.output.buffer],{type:"video/mp4"}));
+      const duration=(clip.lastSlot+1)/CFG.fps;
+      const missed=clip.lastSlot+1-clip.encoded;
+      const save=el("save");
+      save.href=outputURL;
+      save.download="garage-library-four-seasons-"+clip.format.name+".mp4";
+      save.hidden=false;
+      message(clip.format.name+" video · "+clip.encoded+" frames / "+duration.toFixed(2)+" s · "+
+              (clip.encoded/duration).toFixed(1)+" fps · "+missed+" dropped frames");
+    } catch (error) {
+      if (clip.encoder.state!=="closed") clip.encoder.close();
+      message("Recording failed. "+error.message);
+    } finally {
+      exporting=false;
+      enable(true);
+      el("record").textContent=recordLabel();
+      document.body.dataset.recording="false";
+    }
+  }
+  async function toggleRecord() {
+    if (record) {await finishRecord();return;}
+    if (!ready || exporting) return;
+    exporting=true;
+    enable(false);
+    message("Starting "+format.name+" encoding…");
+    try {
+      const clip=await startRecord(format);
+      // Warm up the encoder before starting the capture clock.
+      drawStage();
+      const warm=new VideoFrame(canvas,{timestamp:0,duration:Math.round(1e6/CFG.fps)});
+      clip.encoder.encode(warm,{keyFrame:true}); warm.close();
+      await clip.encoder.flush();
+      if (clip.error) throw clip.error;
+      clip.lastSlot=0;
+      record=clip;
+      sampleStart=0;drawn=0;
+      el("record").textContent="Stop recording";
+      el("record").disabled=false;
+      document.body.dataset.recording="true";
+      message("Recording. Click the scene to change season, then choose Stop recording.");
+    } catch (error) {
+      message("Could not start recording. "+error.message);
+      enable(true);
+    } finally {exporting=false;}
+  }
+
+  function prepareDrawOrders() {
+    const renderOrder=stageSpark.orderingTexture.image.data;
+    const visibleCount=stageSpark.activeSplats;
+    const original=stageSpark.orderingTexture;
+    const mapping=sources.map(node=>stageSpark.display.mapping.find(item=>item.node===node));
+    const textureWidth=4096, idsPerRow=textureWidth*4;
+    function allocate(count) {
+      const rows=Math.ceil(count/idsPerRow);
+      return {rows,data:new Uint32Array(rows*idsPerRow),count:0};
+    }
+    const single=mapping.map(item=>allocate(item.count));
+    const length=mapping.length;
+    const adjacent=mapping.map((item,i)=>allocate(item.count+mapping[(i+1)%length].count));
+    for(let i=0;i<visibleCount;i++) {
+      const id=renderOrder[i];
+      let j=0;
+      while(j+1<mapping.length && id>=mapping[j+1].base) j++;
+      single[j].data[single[j].count++]=id;
+      const previous=adjacent[(j+length-1)%length], next=adjacent[j];
+      previous.data[previous.count++]=id;
+      next.data[next.count++]=id;
+    }
+    for (const batch of [...single,...adjacent]) {
+      batch.texture=new THREE.DataTexture(batch.data,textureWidth,batch.rows,THREE.RGBAIntegerFormat,THREE.UnsignedIntType);
+      batch.origin=camera.position.clone();
+      batch.texture.internalFormat="RGBA32UI";
+      batch.texture.needsUpdate=true;
+      renderer.initTexture(batch.texture);
+      delete batch.data; // Later sort results replace the texture data directly.
+    }
+    for (const [i,item] of mapping.entries()) {
+      seasonRanges.value[i].set(item.base,item.base+item.count);
+    }
+    document.body.dataset.sourcePoints=mapping.map(item=>item.count).join(",");
+    document.body.dataset.drawPoints=single.map(item=>item.count).join(",");
+    const full={texture:original,count:visibleCount,origin:camera.position.clone()};
+    return {mapping,single,adjacent,full};
+  }
+
+  function initializeSortWorker() {
+    const workerURL=URL.createObjectURL(new Blob(["("+sortOrdersInWorker.toString()+")()"],{type:"text/javascript"}));
+    sortWorker=new Worker(workerURL);
+    URL.revokeObjectURL(workerURL);
+    const clouds=batches.mapping.map(({base,count},i)=>{
+      const packed=sources[i].extSplats.extArrays[0];
+      const xyz=new Float32Array(packed.buffer,packed.byteOffset,packed.length);
+      const centers=new Float32Array(count*3);
+      for (let j=0;j<count;j++) {
+        centers[j*3]=xyz[j*4];
+        centers[j*3+1]=xyz[j*4+1];
+        centers[j*3+2]=xyz[j*4+2];
+      }
+      return {base,count,centers};
+    });
+    sortWorker.onmessage=({data})=>{
+      const {season,next,origin,first,second,adjacent,full}=data;
+      const updates=full ? [[batches.full,full]]
+        : [[batches.single[season],first],[batches.single[next],second],[batches.adjacent[season],adjacent]];
+      for (const [batch,order] of updates) {
+        batch.origin.fromArray(origin);
+        batch.texture.image.data=order;
+        batch.texture.needsUpdate=true;
+      }
+      sortPending=false;
+      invalidate();
+    };
+    const {width,height}=batches.full.texture.image;
+    sortWorker.postMessage({clouds,fullCapacity:width*height*4},clouds.map(cloud=>cloud.centers.buffer));
+  }
+  function updateSort(t) {
+    if (sortPending || t-lastSort<CFG.sortInterval) return;
+    const all=waves.length>1;
+    const batch=all ? batches.full : batches.adjacent[season];
+    if (batch.origin.distanceToSquared(bodyPosition)<CFG.sortDistance**2) return;
+    sortPending=true;
+    lastSort=t;
+    sortWorker.postMessage({season,all,origin:bodyPosition.toArray()});
+  }
+
+  function drawStage(time=performance.now()) {
+    const display=stageSpark.display;
+    if (batches) {
+      const ordering=waves.length>1 ? batches.full
+        : waves.length ? batches.adjacent[season] : batches.single[season];
+      stageSpark.orderingTexture=ordering.texture;
+      stageSpark.activeSplats=ordering.count;
+    }
+    worldOffset.value.set(0,0,0);
+    if (!display.extSplats) worldOffset.value.copy(display.viewOrigin);
+    updateWaveUniforms(time);
+    renderer.render(stage,camera);
+  }
+
+  el("record").onclick=()=>{void toggleRecord();};
+  el("hide").onclick=()=>document.body.classList.toggle("clean");
+  const recordLabel=()=> "Record "+format.name+" · 60 fps";
+  el("resolution").onchange=e=>{
+    format=CFG.formats[e.target.value];
+    renderer.setDrawingBufferSize(format.width,format.height,1);
+    el("record").textContent=recordLabel();
+    invalidate();
+  };
+  for (const [i,mark] of marks.entries()) mark.onclick=()=>{
+    waves.length=0;
+    season=i;
+    invalidate();
+    refreshControls();
+  };
+  window.addEventListener("keydown",e=>{
+    if (e.key.toLowerCase()==="h" && ready) document.body.classList.toggle("clean");
+    if (!ready || e.metaKey || e.ctrlKey || e.altKey || !moveKeys.includes(e.code)) return;
+    if (e.target.matches("select,input,textarea")) return;
+    e.preventDefault();
+    stopShotPath();
+    keys.add(e.code);
+  });
+  window.addEventListener("keyup",e=>keys.delete(e.code));
+  window.addEventListener("blur",()=>keys.clear());
+  document.addEventListener("visibilitychange",()=>{
+    if (document.hidden && record) void finishRecord();
+  });
+
+  renderer.setAnimationLoop(t=>{
+    if (!loaded) return;
+    if (!ready) {
+      if (stageSpark.display.mapping.length!==CFG.assets.length) {
+        if (dirty) {dirty=false;drawStage(t);}
+        return;
+      }
+      stageSpark.autoUpdate=false;
+      try {
+        if (stageSpark.display.mapping.some(item=>item.count!==CFG.expectedSplats)) throw Error("One or more scenes have an unexpected splat count.");
+        batches=prepareDrawOrders();
+        initializeSortWorker();
+      } catch (error) {
+        el("status").textContent=error.message;
+        renderer.setAnimationLoop(null);
+        return;
+      }
+      ready=true;
+      refreshControls();
+      enable(true);
+      renderShotList();
+      playShotPath(DEFAULT_CAMERA_PATH);
+      message("Click for ripples · Drag to look · Right-drag to pan · Scroll to move · WASD / Q E · H to hide");
+      void getMuxer().catch(()=>{});
+    }
+    const seconds=Math.min(0.04,(t-(previousTick||t))/1000);
+    previousTick=t;
+    if (shotPath) updateShotPath(t);
+    else updateWalking(seconds);
+    finishWaves(t);
+    updateSort(t);
+    let captureSlot=null;
+    if (record) {
+      record.origin??=t;
+      const slot=Math.round((t-record.origin)*CFG.fps/1000);
+      if (record.error) {void finishRecord();return;}
+      if (slot<=record.lastSlot) return;
+      record.lastSlot=slot;
+      captureSlot=slot;
+    }
+    const activeMotion=Boolean(waves.length || record);
+    if (!(dirty || activeMotion)) return;
+    dirty=false;
+    drawStage(t);
+    if (record && captureSlot!==null && record.encoder.encodeQueueSize<=8) {
+      const timestamp=Math.round(captureSlot*1e6/CFG.fps);
+      const duration=Math.round((captureSlot+1)*1e6/CFG.fps)-timestamp;
+      const frame=new VideoFrame(canvas,{timestamp,duration});
+      record.encoder.encode(frame,{keyFrame:captureSlot%CFG.fps===0});
+      frame.close();
+    }
+    if (activeMotion) {
+      sampleStart ||= t;
+      drawn++;
+      if (t-sampleStart>=CFG.fpsWindow) {
+        el("perf").textContent="Render "+((drawn-1)*1000/(t-sampleStart)).toFixed(1)+" fps"+
+          (record ? " · REC" : "");
+        sampleStart=t;drawn=1;
+      }
+    } else el("perf").textContent="";
+  });
+  await Promise.all(sources.map(mesh=>mesh.initialized));
+  pickSamples=sources.map(({extSplats})=>{
+    const points=[];
+    for (let i=0;i<extSplats.numSplats;i+=CFG.pickStride) {
+      const {center,opacity}=extSplats.getSplat(i);
+      if (opacity>=0.4) points.push(center.x,center.y,center.z);
+    }
+    return new Float32Array(points);
+  });
+  loaded=true;
+  invalidate();
+}
+main().catch(error=>{el("status").textContent="Loading failed. "+error.message;console.error(error);});
+</script>
+</body>
+</html>
