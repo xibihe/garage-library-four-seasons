@@ -59,6 +59,9 @@ body.clean .chrome {display:none}
       <div class="marks" aria-label="Choose a season">
         <button data-season="0" disabled>Spring</button><button data-season="1" disabled>Summer</button><button data-season="2" disabled>Autumn</button><button data-season="3" disabled>Winter</button>
       </div>
+      <label>Wave <select id="waveStyle" disabled>
+        <option value="4">Small ripple</option><option value="5">Double crest</option><option value="6">Crosscurrent</option>
+      </select></label>
       <details id="shotPanel" class="shot-panel">
         <summary>Camera path</summary>
         <div class="shot-sheet">
@@ -105,6 +108,9 @@ const CFG = {
   effectSeconds:1.48,                 // Duration of the other shader modes, in seconds.
   waterSeconds:{large:2.75,small:3},  // Large wave crossing time and small ripple duration.
   waterAcceleration:0.66,            // Seconds for a large wave to reach cruising speed.
+  crestSeconds:2.55,                 // Double crest travel time across the current view.
+  currentSeconds:2.8,                // Crosscurrent travel time across the current view.
+  currentBias:0.72,                  // Directional skew. Keep below 1 so every point is reached.
   waveOutlineMask:15,                // Use 15 or 31 to show a fixed subset of splat outlines.
   expectedSplats:2000000,             // Original count per SPZ. Recording uses the full count.
   camera:{
@@ -221,6 +227,34 @@ function installSeasonShader(spark) {
           covered = 1.0-smoothstep(-band,band,delta-overlap);
           retained = smoothstep(-band,band,delta+overlap);
           delta /= scale;
+        } else if (mode==5 || mode==6) {
+          vec4 wave = useTexture ? texelFetch(waveData,ivec2(0,i),0) : waveOrigins[i];
+          vec3 q = (wp-wave.xyz)*vec3(1.0,0.75,1.0);
+          delta = length(q)-wave.w;
+          if (mode==6) {
+            vec3 axis = useTexture ? texelFetch(waveData,ivec2(2,i),0).xyz : smallRadii[i].xyz;
+            delta -= ${CFG.currentBias}*dot(q,axis);
+          }
+          float band = mode==5 ? 0.24 : 0.33;
+          float overlap = 0.11+${CFG.vehicle.overlap}*vehicle*smoothstep(0.03,0.16,t);
+          if (delta>3.4) continue;
+          if (delta< -2.3) {
+            if (splatSeason==target) keep+=uncovered;
+            uncovered=0.0;
+            break;
+          }
+          // Shape only the boundary. The underlying splat centers stay fixed.
+          float bend = sin(dot(q,vec3(0.82,0.37,-0.55)));
+          delta += state.w*(mode==5 ? 0.18*bend : 0.38*bend+0.11*sin(1.7*q.y-0.6*q.z+bend));
+          covered = 1.0-smoothstep(-band,band,delta-overlap);
+          retained = smoothstep(-band,band,delta+overlap);
+          if (mode==5) {
+            // The leading reflection first separates, then the main crest gains on it.
+            roll = 0.58+1.16*smoothstep(0.0,3.3,wave.w)-0.98*smoothstep(4.0,9.5,wave.w);
+            score = strength*max(ridge(delta-roll,0.50),ridge(delta+0.20,1.15));
+          } else {
+            score = strength*ridge(delta+0.22,1.75);
+          }
         } else if (mode==1) {
           float field = wp.x+0.24*wp.y-0.29*wp.z
             +0.42*sin(0.85*wp.z+1.8*wp.y)+0.19*sin(wp.y*3.9-wp.z*2.1);
@@ -299,6 +333,15 @@ function installSeasonShader(spark) {
               rgba.a *= 1.0-0.24*reveal*(1.0-surface.vehicle);
             }
           }
+      } else if (surface.mode==5 || surface.mode==6) {
+        float d=surface.delta;
+        bool twin=surface.mode==5;
+        float trough=twin ? ridge(d-0.27,0.34) : ridge(d+0.48,0.77);
+        float light=twin ? 0.35*ridge(d-surface.roll,0.38)+0.45*ridge(d+0.16,0.51)
+                         : 0.42*ridge(d-0.20,0.86)+0.13*ridge(d+1.04,0.37);
+        vec3 glint=twin ? vec3(0.76,0.89,0.94) : vec3(1.0,0.85,0.65);
+        rgba.rgb *= 1.0-0.27*surface.strength*trough;
+        rgba.rgb = mix(rgba.rgb,max(rgba.rgb,glint),surface.strength*light);
       } else if (surface.mode==1) {
         rgba.rgb = mix(rgba.rgb,vec3(0.94,0.90,0.78),0.34*surface.score);
       } else if (surface.mode==2) {
@@ -508,7 +551,7 @@ async function main() {
     if (Number.isFinite(bestDepth)) return ray.at(bestDepth,point);
     return ray.intersectBox(room,point) ?? ray.at(5,point);
   }
-  function getVisibleReach(origin,from,next,reach) {
+  function getVisibleReach(origin,from,next,reach,direction) {
     // Estimate visible reach from both seasons in the current view, excluding outliers.
     const point=new THREE.Vector3();
     const bins=new Uint32Array(Math.ceil(reach*2)+1);
@@ -520,7 +563,9 @@ async function main() {
         const depth=-point.z;
         if (depth<0.4 || Math.abs(point.x)*sx>depth || Math.abs(point.y)*sy>depth) continue;
         const dx=samples[i]-origin.x, dy=(samples[i+1]-origin.y)*0.75, dz=samples[i+2]-origin.z;
-        const bin=Math.min(bins.length-1,Math.floor(2*Math.sqrt(dx*dx+dy*dy+dz*dz)));
+        let distance=Math.sqrt(dx*dx+dy*dy+dz*dz);
+        if (direction) distance-=CFG.currentBias*(dx*direction.x+dy*direction.y+dz*direction.z);
+        const bin=Math.min(bins.length-1,Math.floor(2*distance));
         bins[bin]++;
         total++;
       }
@@ -539,20 +584,31 @@ async function main() {
     finishWaves(start);
     const from=waves.at(-1)?.target??season;
     const target=(from+1)%sources.length;
-    const mode=CFG.transitionMode;
+    const mode=Number(el("waveStyle").value || CFG.transitionMode);
     const origin=pickPoint(event);
+    const direction=mode===6 ? new THREE.Vector3(0.76,0.65,0).normalize().applyQuaternion(camera.quaternion) : null;
     const dx=Math.max(Math.abs(origin.x-room.min.x),Math.abs(origin.x-room.max.x));
     const dy=Math.max(Math.abs(origin.y-room.min.y),Math.abs(origin.y-room.max.y));
     const dz=Math.max(Math.abs(origin.z-room.min.z),Math.abs(origin.z-room.max.z));
-    const reach=Math.hypot(dx,0.75*dy,dz)+1.25;
+    let reach=Math.hypot(dx,0.75*dy,dz)+1.25;
+    if (direction) {
+      // The skewed distance is convex, so its maximum lies on a room corner.
+      reach=0;
+      for (const x of [room.min.x,room.max.x]) for (const y of [room.min.y,room.max.y]) for (const z of [room.min.z,room.max.z]) {
+        const offset=new THREE.Vector3(x-origin.x,0.75*(y-origin.y),z-origin.z);
+        reach=Math.max(reach,offset.length()-CFG.currentBias*offset.dot(direction));
+      }
+      reach+=1.25;
+    }
     let speed=0, duration=mode===4 ? CFG.waterSeconds.small : CFG.effectSeconds;
-    if (mode===0) {
-      const visible=getVisibleReach(origin,from,target,reach);
+    if (mode===0 || mode===5 || mode===6) {
+      const visible=getVisibleReach(origin,from,target,reach,direction);
       const halfRamp=CFG.waterAcceleration*0.5;
-      speed=(visible+0.32)/(CFG.waterSeconds.large-halfRamp);
+      const crossing=mode===5 ? CFG.crestSeconds : mode===6 ? CFG.currentSeconds : CFG.waterSeconds.large;
+      speed=(visible+0.32)/(crossing-halfRamp);
       duration=(reach+0.32)/speed+halfRamp;
     }
-    waves.push({origin,mode,target,start,duration,reach,speed});
+    waves.push({origin,mode,target,start,duration,reach,speed,direction});
     if (waves.length===1 && !record) {sampleStart=0;drawn=0;}
     refreshControls();
     invalidate();
@@ -583,7 +639,7 @@ async function main() {
       const elapsed=Math.max(0,(time-wave.start)/1000);
       const t=Math.min(1,elapsed/wave.duration);
       let radius=0;
-      if (wave.mode===0) {
+      if (wave.mode===0 || wave.mode===5 || wave.mode===6) {
         const ramp=CFG.waterAcceleration;
         // Integrate the initial acceleration and keep a constant speed past the scene edge.
         radius=-0.32+wave.speed*(elapsed<ramp ? elapsed*elapsed/(2*ramp) : elapsed-ramp*0.5);
@@ -605,6 +661,8 @@ async function main() {
         for (const [j,[,,,delay]] of CFG.smallWaveSources.entries()) {
           radii[radiiOffset+j]=smallRadius((t-delay)/(1-delay));
         }
+      } else if (wave.direction) {
+        wave.direction.toArray(radii,radiiOffset);
       }
     }
     if (useTexture) waveData.value.needsUpdate=true;
@@ -1021,6 +1079,8 @@ async function main() {
         return;
       }
       ready=true;
+      el("waveStyle").value=String(CFG.transitionMode);
+      el("waveStyle").disabled=false;
       refreshControls();
       enable(true);
       renderShotList();

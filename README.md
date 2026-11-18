@@ -15,7 +15,7 @@ Open [localhost:8000](http://127.0.0.1:8000/) in a WebGL 2 browser. The viewer l
 ## Controls
 
 - The original five-view camera path plays once when the scenes finish loading. Use **Camera path** to replay it or save your own views in the current browser.
-- Click the scene to change season with small ripples. The season buttons jump directly to a scene.
+- Select **Small ripple**, **Double crest**, or **Crosscurrent** under **Wave**, then click the scene. Each click launches the selected effect independently. The season buttons jump directly to a scene.
 - Drag to look, right-drag or Shift-drag to pan, and scroll to move forward or back. Use WASD to walk, Q to lower the camera, and E to raise it. Manual camera movement takes over during path playback.
 - Press H to toggle the interface. Use **Record** to capture an MP4 on browsers that support H.264 through WebCodecs.
 
